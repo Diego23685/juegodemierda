@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini Platformer – HTML5 Canvas</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0b1020;
+      color: #e8eefc;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, sans-serif;
+      overflow: hidden;
+    }
+    #hud {
+      position: fixed;
+      top: 10px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 16px; align-items: center;
+      background: rgba(10, 14, 30, .7);
+      border: 1px solid #1f2a44;
+      border-radius: 12px;
+      padding: 8px 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      user-select: none;
+      pointer-events: none;
+      font-weight: 600;
+    }
+    #hud span { opacity: .9 }
+    #help {
+      position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+      background: rgba(10, 14, 30, .7);
+      border: 1px solid #1f2a44;
+      border-radius: 12px; padding: 8px 12px; font-size: 14px;
+      text-align: center; line-height: 1.4; user-select: none;
+    }
+    #overlay {
+      position: fixed; inset: 0; display: none; place-items: center;
+      background: rgba(5, 8, 18, .85);
+    }
+    #overlay .card{
+      background: #0b132b; border: 1px solid #1f2a44; border-radius: 16px; padding: 20px; text-align:center;
+      width: min(90vw, 460px);
+      box-shadow: 0 10px 40px rgba(0,0,0,.35)
+    }
+    #overlay h2 { margin: 0 0 10px }
+    #overlay button{
+      margin-top: 14px; background: #3b82f6; color: white; border: none; border-radius: 10px;
+      padding: 10px 16px; font-weight: 700; cursor: pointer
+    }
+    canvas{ display:block; width:100vw; height:100vh; }
+    /* Botones móviles */
+    #touch {
+      position: fixed; inset: 0; pointer-events: none;
+    }
+    .btn {
+      position: absolute; bottom: 24px; width: 68px; height: 68px; border-radius: 50%;
+      background: rgba(59,130,246,.25); border: 1px solid rgba(59,130,246,.45);
+      pointer-events: auto; touch-action: none; display: grid; place-items: center; font-weight: 800;
+      user-select: none;
+    }
+    .btn:active{ filter: brightness(1.2) }
+    #btnLeft{ left: 24px }
+    #btnRight{ left: 108px }
+    #btnJump{ right: 24px }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <span id="coins">Monedas: 0</span>
+    <span id="lives">Vidas: 3</span>
+    <span id="timer">Tiempo: 0.0s</span>
+  </div>
+  <div id="help">Flechas izquierda/derecha para moverte · Barra espaciadora para saltar · R para reiniciar</div>
+  <canvas id="game" width="1280" height="720"></canvas>
+  <div id="overlay"><div class="card">
+    <h2 id="ovTitle"></h2>
+    <p id="ovMsg"></p>
+    <button id="ovBtn">Jugar de nuevo</button>
+  </div></div>
+  <div id="touch" aria-hidden="true">
+    <div class="btn" id="btnLeft">◀</div>
+    <div class="btn" id="btnRight">▶</div>
+    <div class="btn" id="btnJump" style="width:82px;height:82px;">⤒</div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const hudCoins = document.getElementById('coins');
+  const hudLives = document.getElementById('lives');
+  const hudTimer = document.getElementById('timer');
+  const overlay = document.getElementById('overlay');
+  const ovTitle = document.getElementById('ovTitle');
+  const ovMsg = document.getElementById('ovMsg');
+  const ovBtn = document.getElementById('ovBtn');
+
+  // Scaling to device size while keeping internal resolution stable
+  function fitCanvas() {
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const w = window.innerWidth, h = window.innerHeight;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', fitCanvas);
+  fitCanvas();
+
+  // Input
+  const keys = new Set();
+  window.addEventListener('keydown', e => {
+    if (["ArrowLeft","ArrowRight"," ","Space","KeyR"].includes(e.code)) e.preventDefault();
+    keys.add(e.code);
+  });
+  window.addEventListener('keyup', e => keys.delete(e.code));
+
+  // Touch controls
+  function bindTouch(id, on, off) {
+    const el = document.getElementById(id);
+    const start = (e)=>{ e.preventDefault(); on(); }
+    const end = (e)=>{ e.preventDefault(); off(); }
+    el.addEventListener('touchstart', start, {passive:false});
+    el.addEventListener('touchend', end, {passive:false});
+    el.addEventListener('touchcancel', end, {passive:false});
+    el.addEventListener('mousedown', start);
+    el.addEventListener('mouseup', end);
+    el.addEventListener('mouseleave', end);
+  }
+  let touchLeft=false, touchRight=false, touchJump=false;
+  bindTouch('btnLeft', ()=>touchLeft=true, ()=>touchLeft=false);
+  bindTouch('btnRight', ()=>touchRight=true, ()=>touchRight=false);
+  bindTouch('btnJump', ()=>touchJump=true, ()=>touchJump=false);
+
+  // World
+  const G = 1800; // gravity px/s^2
+  const MOVE = 420; // move speed px/s
+  const JUMP = 760; // jump impulse px/s
+  const FRICTION = 0.82; // ground friction
+
+  const state = {
+    startedAt: performance.now(),
+    time: 0,
+    coins: 0,
+    lives: 3,
+    camera: {x: 0, y: 0},
+    goalReached: false,
+  };
+
+  const player = {
+    x: 60, y: -200,
+    w: 34, h: 46,
+    vx: 0, vy: 0,
+    onGround: false,
+    canDouble: true,
+    facing: 1,
+  };
+
+  // Level design: platforms, coins, hazards, goal
+  const platforms = [
+    // ground and steps
+    {x:-200, y:300, w:1800, h:40},
+    {x:350, y:220, w:120, h:16},
+    {x:520, y:160, w:120, h:16},
+    {x:700, y:120, w:150, h:16},
+    {x:940, y:260, w:160, h:16},
+    {x:1180, y:220, w:180, h:16},
+    {x:1420, y:180, w:180, h:16},
+    // floating
+    {x:1750, y:140, w:160, h:16},
+    {x:1950, y:200, w:180, h:16},
+    {x:2150, y:260, w:180, h:16},
+    {x:2400, y:220, w:220, h:16},
+    {x:2700, y:180, w:200, h:16},
+    {x:3000, y:140, w:200, h:16},
+  ];
+
+  const coins = [
+    {x:380,y:190,t:false},{x:550,y:130,t:false},{x:730,y:90,t:false},
+    {x:970,y:230,t:false},{x:1210,y:190,t:false},{x:1450,y:150,t:false},
+    {x:1780,y:110,t:false},{x:1980,y:170,t:false},{x:2180,y:230,t:false},
+    {x:2430,y:190,t:false},{x:2730,y:150,t:false},{x:3030,y:110,t:false}
+  ];
+
+  const spikes = [
+    {x:860, y:300, w:60, h:40},
+    {x:1600, y:300, w:60, h:40},
+    {x:2320, y:300, w:60, h:40},
+  ];
+
+  const enemies = [
+    {x:1060, y:244, w:28, h:24, dir:1, left:1040, right:1200, speed:70},
+    {x:1980, y:184, w:28, h:24, dir:-1, left:1950, right:2050, speed:80},
+  ];
+
+  const goal = {x:3200, y:100, w:36, h:72};
+
+  function reset() {
+    player.x = 60; player.y = -200; player.vx = 0; player.vy = 0;
+    player.onGround = false; player.canDouble = true; player.facing = 1;
+    state.camera.x = 0; state.camera.y = 0; state.goalReached = false;
+    state.startedAt = performance.now(); state.time = 0; state.coins = 0; state.lives = 3;
+    coins.forEach(c=>c.t=false);
+    overlay.style.display = 'none';
+  }
+
+  function loseLife() {
+    state.lives -= 1;
+    if (state.lives <= 0) {
+      showOverlay('Perdiste', 'Te quedaste sin vidas.');
+      return;
+    }
+    // Respawn at last safe ground
+    player.x = Math.max(60, player.x - 120);
+    player.y = -120; player.vx = 0; player.vy = 0; player.onGround = false; player.canDouble = true;
+  }
+
+  function showOverlay(title, msg) {
+    ovTitle.textContent = title;
+    ovMsg.textContent = msg + `\nTiempo: ${state.time.toFixed(1)}s · Monedas: ${state.coins}`;
+    overlay.style.display = 'grid';
+  }
+  ovBtn.addEventListener('click', reset);
+
+  function aabb(ax,ay,aw,ah,bx,by,bw,bh){
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  function step(dt){
+    // Timer
+    state.time = (performance.now() - state.startedAt) / 1000;
+
+    // Input composed
+    const left = keys.has('ArrowLeft') || touchLeft;
+    const right = keys.has('ArrowRight') || touchRight;
+    let wantJump = keys.has('Space') || keys.has(' ') || touchJump;
+
+    // Horizontal
+    if (left && !right) { player.vx = -MOVE; player.facing = -1; }
+    else if (right && !left) { player.vx = MOVE; player.facing = 1; }
+    else { player.vx *= player.onGround ? FRICTION : 0.98; if (Math.abs(player.vx) < 1) player.vx = 0; }
+
+    // Jump
+    if (wantJump) {
+      if (player.onGround) {
+        player.vy = -JUMP; player.onGround = false; player.canDouble = true;
+      } else if (player.canDouble) {
+        player.vy = -JUMP * 0.9; player.canDouble = false;
+      }
+      // avoid holding jump continuously
+      wantJump = false; touchJump = false; keys.delete('Space'); keys.delete(' ');
+    }
+
+    // Gravity
+    player.vy += G * dt;
+
+    // Integrate
+    let nextX = player.x + player.vx * dt;
+    let nextY = player.y + player.vy * dt;
+
+    // Collisions with platforms (resolve axis by axis)
+    player.onGround = false;
+
+    // X axis
+    const px = {x: nextX, y: player.y, w: player.w, h: player.h};
+    for (const p of platforms) {
+      if (aabb(px.x, px.y, px.w, px.h, p.x, p.y, p.w, p.h)) {
+        if (player.vx > 0) nextX = p.x - player.w - 0.01; else if (player.vx < 0) nextX = p.x + p.w + 0.01;
+        player.vx = 0;
+      }
+    }
+
+    // Y axis
+    const py = {x: nextX, y: nextY, w: player.w, h: player.h};
+    for (const p of platforms) {
+      if (aabb(py.x, py.y, py.w, py.h, p.x, p.y, p.w, p.h)) {
+        if (player.vy > 0) { // falling, hit top of platform
+          nextY = p.y - player.h - 0.01; player.vy = 0; player.onGround = true;
+        } else if (player.vy < 0) { // moving up, hit ceiling
+          nextY = p.y + p.h + 0.01; player.vy = 0;
+        }
+      }
+    }
+
+    player.x = nextX; player.y = nextY;
+
+    // World bounds (floor death)
+    if (player.y > 900) {
+      loseLife();
+    }
+
+    // Coins
+    for (const c of coins) {
+      if (!c.t && aabb(player.x, player.y, player.w, player.h, c.x-8, c.y-8, 16, 16)) {
+        c.t = true; state.coins++;
+      }
+    }
+
+    // Enemies patrol
+    for (const e of enemies) {
+      e.x += e.speed * e.dir * dt;
+      if (e.x < e.left) { e.x = e.left; e.dir = 1; }
+      if (e.x > e.right) { e.x = e.right; e.dir = -1; }
+      if (aabb(player.x, player.y, player.w, player.h, e.x, e.y, e.w, e.h)) {
+        // Stomp check
+        if (player.vy > 120) {
+          e.y = 10000; // remove
+          player.vy = -JUMP*0.6;
+        } else {
+          loseLife();
+        }
+      }
+    }
+
+    // Spikes
+    for (const s of spikes) {
+      if (aabb(player.x, player.y, player.w, player.h, s.x, s.y, s.w, s.h)) {
+        loseLife();
+      }
+    }
+
+    // Goal
+    if (!state.goalReached && aabb(player.x, player.y, player.w, player.h, goal.x, goal.y, goal.w, goal.h)) {
+      state.goalReached = true;
+      showOverlay('Meta alcanzada', '¡Buen trabajo!');
+    }
+
+    // Camera follow
+    const marginX = 220;
+    const centerX = state.camera.x + canvas.clientWidth/2;
+    if (player.x - centerX > marginX) state.camera.x = player.x - marginX - canvas.clientWidth/2;
+    if (centerX - player.x > marginX) state.camera.x = player.x + marginX - canvas.clientWidth/2;
+    state.camera.x = Math.max(-300, Math.min(4000, state.camera.x));
+
+    // HUD
+    hudCoins.textContent = `Monedas: ${state.coins}`;
+    hudLives.textContent = `Vidas: ${state.lives}`;
+    hudTimer.textContent = `Tiempo: ${state.time.toFixed(1)}s`;
+
+    // Reset key
+    if (keys.has('KeyR')) { reset(); keys.delete('KeyR'); }
+  }
+
+  function draw(){
+    const camX = Math.floor(state.camera.x);
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+
+    // Sky gradient
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0, '#0d1b2a');
+    g.addColorStop(1, '#111827');
+    ctx.fillStyle = g; ctx.fillRect(0,0,w,h);
+
+    ctx.save();
+    ctx.translate(-camX, 0);
+
+    // Parallax stars
+    ctx.globalAlpha = .25;
+    for (let i=0;i<80;i++) {
+      const x = (i*97)%5000;
+      const y = (i*53)%h;
+      ctx.fillStyle = '#dbeafe';
+      ctx.fillRect(x*0.5, y*0.7 + 10*Math.sin((x+y+state.time*30)/200), 2,2);
+    }
+    ctx.globalAlpha = 1;
+
+    // Platforms
+    for (const p of platforms) {
+      ctx.fillStyle = '#1f2937';
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(p.x, p.y, p.w, 4);
+    }
+
+    // Spikes
+    for (const s of spikes) {
+      ctx.fillStyle = '#8b1e2d';
+      const tH = s.h; const triW = 12; const n = Math.floor(s.w/triW);
+      for (let i=0;i<n;i++){
+        const x = s.x + i*triW;
+        ctx.beginPath();
+        ctx.moveTo(x, s.y+s.h);
+        ctx.lineTo(x+triW/2, s.y+s.h - tH);
+        ctx.lineTo(x+triW, s.y+s.h);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+
+    // Coins
+    for (const c of coins) {
+      if (c.t) continue;
+      ctx.fillStyle = '#fbbf24';
+      ctx.beginPath(); ctx.arc(c.x, c.y, 8, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = '#fde68a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(c.x, c.y, 6, 0, Math.PI*2); ctx.stroke();
+    }
+
+    // Enemies
+    for (const e of enemies) {
+      ctx.fillStyle = '#a78bfa';
+      ctx.fillRect(e.x, e.y, e.w, e.h);
+      ctx.fillStyle = '#c4b5fd';
+      ctx.fillRect(e.x+3, e.y+6, e.w-6, 6);
+    }
+
+    // Goal (flag)
+    ctx.fillStyle = '#22c55e';
+    ctx.fillRect(goal.x, goal.y, 6, goal.h);
+    ctx.fillStyle = '#16a34a';
+    ctx.beginPath();
+    ctx.moveTo(goal.x+6, goal.y+6);
+    ctx.lineTo(goal.x+36, goal.y+16);
+    ctx.lineTo(goal.x+6, goal.y+26);
+    ctx.closePath(); ctx.fill();
+
+    // Player
+    ctx.save();
+    ctx.translate(player.x + player.w/2, player.y + player.h/2);
+    ctx.scale(player.facing, 1);
+    ctx.translate(-player.w/2, -player.h/2);
+    ctx.fillStyle = '#60a5fa';
+    ctx.fillRect(0, 0, player.w, player.h);
+    // face
+    ctx.fillStyle = '#e5e7eb';
+    ctx.fillRect(8,10,6,6); ctx.fillRect(20,10,6,6);
+    ctx.fillStyle = '#1f2937'; ctx.fillRect(8,28,20,4);
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.033, (now - last)/1000); last = now;
+    step(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // start hidden overlay on win/lose handled elsewhere
+})();
+</script>
+</body>
+</html>
