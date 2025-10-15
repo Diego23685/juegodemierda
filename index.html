@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Papu Platformer – Mega Brainrot Fix</title>
+  <title>Papu Platformer – Cubitos Power-Up</title>
   <style>
     html, body { height: 100%; margin: 0; background: #0b1020; color: #e8eefc; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
     canvas{ display:block; width:100vw; height:100vh; }
@@ -37,7 +37,7 @@
   </div>
   <div id="bossbar"><div></div></div>
   <button id="audioToggle" title="Alternar audio">Audio: Off</button>
-  <div id="help">Flechitas para moverte · Espacio para saltar (doble salto de papu) · X para dar tunazo · P pausa · R reinicia</div>
+  <div id="help">Flechitas moverse · Espacio doble salto · X tunazo · C disparar cubitos (si pillas el power) · P pausa · R reinicia</div>
   <canvas id="game" width="1280" height="720"></canvas>
 
   <div id="overlay"><div class="card">
@@ -83,7 +83,7 @@
 
   const keys = new Set();
   window.addEventListener('keydown', e => {
-    if (["ArrowLeft","ArrowRight"," ","Space","KeyR","KeyX","KeyP","Enter"].includes(e.code)) e.preventDefault();
+    if (["ArrowLeft","ArrowRight"," ","Space","KeyR","KeyX","KeyC","KeyP","Enter"].includes(e.code)) e.preventDefault();
     keys.add(e.code);
   });
   window.addEventListener('keyup', e => keys.delete(e.code));
@@ -127,7 +127,9 @@
     onGround: false, canDouble: true,
     facing: 1,
     maxHp: 5, hp: 5,
-    hurtCd: 0
+    hurtCd: 0,
+    hasBlaster: false,
+    shootCd: 0
   };
 
   const AudioSys = (()=>{
@@ -160,11 +162,12 @@
       hit(){ envOsc(160, 0.1, 'sawtooth', 0.2); },
       attack(){ envOsc(420, 0.05, 'triangle', 0.18); },
       hurt(){ envOsc(140, 0.18, 'sawtooth', 0.25); },
-      shoot(){ envOsc(700, 0.06, 'square', 0.14); },
+      shoot(){ envOsc(760, 0.05, 'square', 0.18); envOsc(480, 0.06, 'triangle', 0.12); },
       win(){ envOsc(660, 0.16, 'sine', 0.22); envOsc(880, 0.18, 'sine', 0.22); },
       lose(){ envOsc(200, 0.3, 'sawtooth', 0.25); },
       stomp(){ envOsc(300, 0.07, 'triangle', 0.2); },
-      bossPhase(){ envOsc(500, 0.35, 'sawtooth', 0.15, musicGain); }
+      bossPhase(){ envOsc(500, 0.35, 'sawtooth', 0.15, musicGain); },
+      power(){ envOsc(1040, 0.2, 'sawtooth', 0.25); }
     };
     const Music = {
       playing: false,
@@ -250,15 +253,18 @@
     enemies: [],
     goal: {x:1600, y:320, w:0, h:0},
     length: 1800,
-    boss: { x: 1250, y: 296, w: 56, h: 48, vx:0, vy:0, onGround:true, hp: 30, maxHp:30, phase:1, iFrames:0, atkCd:0, jumpCd:1.2 }
+    boss: { x: 1250, y: 296, w: 56, h: 48, vx:0, vy:0, onGround:true, hp: 30, maxHp:30, phase:1, iFrames:0, atkCd:0, jumpCd:1.2 },
+    // Special power-up to enable cube shooting
+    power: { x: 1060, y: 320, w: 22, h: 22, taken: false }
   };}
 
   function buildLevels(){ return [mkLevel1(), mkLevel2(), mkBossLevel()]; }
 
   let levels = buildLevels();
   let cur = levels[state.levelIndex];
-  const bullets = [];
-  const bossBullets = [];
+  const bullets = [];      // enemy bullets
+  const bossBullets = [];  // boss bullets
+  const shots = [];        // player cube shots
 
   function aabb(ax,ay,aw,ah,bx,by,bw,bh){ return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by; }
 
@@ -279,7 +285,8 @@
 
   const LORE = `Bienvenido, papu.
 El multiverso está infestado de brainrots.
-Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
+Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.
+Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
 
   function toMenu(){
     state.screen = 'menu';
@@ -289,7 +296,7 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       {label:'Lore del Papu', onClick: ()=>{ showOverlay('Lore del Papu', LORE, [{label:'Volver', onClick: toMenu}]); }},
       {label: state.audioOn? 'Mute (shhhh)' : 'Prender audio', ghost:true, onClick: ()=>{ AudioSys.setAudio(!state.audioOn);} },
       {label:'Controles (cero ciencia)', ghost:true, onClick: ()=>{
-        showOverlay('Controles', 'Flechitas: moverse\nEspacio: salto/doble salto\nX: tunazo frontal\nP: pausa\nR: reiniciar nivel', [
+        showOverlay('Controles', 'Flechitas: mover\nEspacio: salto/doble\nX: tunazo\nC: disparar cubitos (tras power)\nP: pausa · R: reiniciar', [
           {label:'Volver', onClick: toMenu}
         ]);
       }}
@@ -305,25 +312,21 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
     showOverlay('Selector de niveles', 'Elegí tu dosis de tonterías:', actions);
   }
 
-  // --- IMPORTANT FIX: rebuild level objects on every start ---
+  // --- Rebuild levels every start to reset boss & power state ---
   function startLevel(idx){
-    // Recreate levels to reset any mutated state (e.g., boss HP)
     levels = buildLevels();
     state.levelIndex = idx;
     cur = levels[state.levelIndex];
 
-    Object.assign(player, {x:cur.start.x, y:cur.start.y, vx:0, vy:0, onGround:false, canDouble:true, facing:1, hp: player.maxHp, hurtCd:0});
+    Object.assign(player, {x:cur.start.x, y:cur.start.y, vx:0, vy:0, onGround:false, canDouble:true, facing:1, hp: player.maxHp, hurtCd:0, hasBlaster:false, shootCd:0});
     Object.assign(state, {screen:'playing', coins:0, time:0, startedAt:performance.now(), camera:{x:0,y:0}});
 
-    // Reset collectibles/enemies
+    // Reset collectibles
     cur.coins.forEach(c=>c.t=false);
     cur.hearts.forEach(h=>h.taken=false);
     if (cur.enemies) cur.enemies.forEach(e=>{ e.alive=true; e.hp = e.type==='walker'? (e.hp||2) : (e.hp||3); e.iFrames=0; if (e.type==='walker'){ e.x=(e.left+e.right)/2; } });
+    bullets.length = 0; bossBullets.length = 0; shots.length = 0;
 
-    // Clear projectiles
-    bullets.length = 0; bossBullets.length = 0;
-
-    // UI & audio
     hideOverlay();
     renderHearts();
     bossFill.style.width = "100%";
@@ -376,6 +379,21 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
     if (attack.cdLeft > 0 || attack.active || state.screen!=='playing') return;
     attack.active = true; attack.timer = attack.duration; attack.cdLeft = attack.cooldown;
     AudioSys.SFX.attack();
+  }
+
+  function shootCube(){
+    if (!player.hasBlaster) return;
+    if (player.shootCd > 0) return;
+    const speed = 520;
+    const dir = player.facing;
+    const rotating = !player.onGround; // rotate if fired while jumping
+    shots.push({
+      x: player.x + (dir>0 ? player.w+2 : -14), y: player.y + 16,
+      vx: dir*speed, vy: 0, w: 14, h: 14,
+      angle: 0, rotSpeed: rotating ? 12 : 0, rotating
+    });
+    player.shootCd = 0.22;
+    AudioSys.SFX.shoot();
   }
 
   function bossStep(dt){
@@ -434,6 +452,7 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
     const right = keys.has('ArrowRight') || touchRight;
     let wantJump = keys.has('Space') || keys.has(' ') || touchJump;
     const wantAtk = keys.has('KeyX') || touchAtk;
+    const wantShoot = keys.has('KeyC');
 
     if (keys.has('KeyP')) { keys.delete('KeyP'); pause(); return; }
     if (keys.has('KeyR')) { keys.delete('KeyR'); startLevel(state.levelIndex); return; }
@@ -448,6 +467,8 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       wantJump = false; touchJump=false; keys.delete('Space'); keys.delete(' ');
     }
     if (wantAtk) { doAttack(); keys.delete('KeyX'); }
+    if (wantShoot) { shootCube(); keys.delete('KeyC'); }
+    if (player.shootCd > 0) player.shootCd -= dt;
 
     if (attack.cdLeft > 0) attack.cdLeft -= dt;
     if (attack.active) { attack.timer -= dt; if (attack.timer <= 0) attack.active = false; }
@@ -478,6 +499,22 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
 
     for (const h of cur.hearts) if (!h.taken && aabb(player.x, player.y, player.w, player.h, h.x-8, h.y-8, 16, 16)) {
       h.taken = true; player.hp = Math.min(player.maxHp, player.hp + 1); renderHearts();
+    }
+
+    if (state.levelIndex===2 && cur.power && !cur.power.taken) {
+      if (aabb(player.x, player.y, player.w, player.h, cur.power.x-8, cur.power.y-8, cur.power.w+16, cur.power.h+16)) {
+        cur.power.taken = true;
+        player.hasBlaster = true;
+        AudioSys.SFX.power();
+
+        state.screen = 'paused';
+        showOverlay('Power Cubitos', 'Agarraste el Cubito Supremo.\nPulsa C para disparar cubitos.\nMAMALA.', [
+          {label:'Ok', onClick: ()=>{
+            hideOverlay();
+            state.screen = 'playing';
+          }}
+        ]);
+      }
     }
 
     if (state.levelIndex < 2) {
@@ -527,6 +564,17 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
         if (aabb(atkBox.x, atkBox.y, atkBox.w, atkBox.h, b.x, b.y, b.w, b.h)) { b.hp -= 1; b.iFrames = 0.2; AudioSys.SFX.hit(); }
       }
 
+      // Player shots vs boss
+      for (let i = shots.length - 1; i >= 0; i--) {
+        const s = shots[i];
+        if (aabb(s.x, s.y, s.w, s.h, b.x, b.y, b.w, b.h) && b.iFrames<=0) {
+          b.hp -= 2; // cubes hit harder
+          b.iFrames = 0.2;
+          AudioSys.SFX.hit();
+          shots.splice(i,1);
+        }
+      }
+
       for (let i = bossBullets.length - 1; i >= 0; i--) {
         const bb = bossBullets[i];
         bb.x += bb.vx * dt; bb.y += bb.vy * dt;
@@ -547,6 +595,7 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       }
     }
 
+    // Update enemy bullets
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       b.x += b.vx * dt; b.y += b.vy * dt;
@@ -554,6 +603,30 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       for (const p of cur.platforms) if (aabb(b.x, b.y, b.w, b.h, p.x, p.y, p.w, p.h)) { hit = true; break; }
       if (aabb(player.x, player.y, player.w, player.h, b.x, b.y, b.w, b.h)) { damagePlayer(1); hit = true; }
       if (hit || b.x < -400 || b.x > cur.length+400) bullets.splice(i,1);
+    }
+
+    // Update player shots
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i];
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      if (s.rotating) s.angle += s.rotSpeed * dt;
+
+      // collide with platforms
+      let stop = false;
+      for (const p of cur.platforms) {
+        if (aabb(s.x, s.y, s.w, s.h, p.x, p.y, p.w, p.h)) { stop = true; break; }
+      }
+      // vs regular enemies (levels 1-2)
+      if (state.levelIndex < 2) {
+        for (const e of cur.enemies) {
+          if (!e.alive) continue;
+          if (aabb(s.x, s.y, s.w, s.h, e.x, e.y, e.w, e.h)) {
+            e.hp -= 3; e.iFrames = 0.2; if (e.hp <= 0) { e.alive=false; state.coins+=1; }
+            stop = true; break;
+          }
+        }
+      }
+      if (stop || s.x < -400 || s.x > cur.length+400 || s.y < -300 || s.y > 1200) shots.splice(i,1);
     }
 
     for (const s of cur.spikes) if (aabb(player.x, player.y, player.w, player.h, s.x, s.y, s.w, s.h)) damagePlayer(1);
@@ -607,8 +680,10 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       for (let i=0;i<n;i++){ const x = s.x + i*triW; ctx.beginPath(); ctx.moveTo(x, s.y+s.h); ctx.lineTo(x+triW/2, s.y+s.h - tH); ctx.lineTo(x+triW, s.y+s.h); ctx.closePath(); ctx.fill(); }
     }
 
+    // coins
     for (const c of cur.coins) { if (c.t) continue; ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(c.x, c.y, 8, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = '#fde68a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(c.x, c.y, 6, 0, Math.PI*2); ctx.stroke(); }
 
+    // heart pickups
     for (const htp of cur.hearts) {
       if (htp.taken) continue;
       ctx.fillStyle = '#ef4444';
@@ -622,6 +697,22 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       ctx.strokeStyle = '#fecaca'; ctx.stroke();
     }
 
+    // Power-up cube (boss level)
+    if (state.levelIndex===2 && cur.power && !cur.power.taken) {
+      const p = cur.power;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      const t = performance.now()/400;
+      ctx.rotate(t % (Math.PI*2));
+      ctx.fillStyle = '#93c5fd';
+      ctx.fillRect(-10, -10, 20, 20);
+      ctx.strokeStyle = '#e0f2fe';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(-10, -10, 20, 20);
+      ctx.restore();
+    }
+
+    // Enemies
     if (state.levelIndex < 2) {
       for (const e of cur.enemies) {
         if (!e.alive) continue;
@@ -645,8 +736,10 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
       for (const bb of bossBullets) { ctx.fillStyle = '#fca5a5'; ctx.fillRect(bb.x, bb.y, bb.w, bb.h); }
     }
 
+    // Enemy bullets
     for (const b of bullets) { ctx.fillStyle = '#fca5a5'; ctx.fillRect(b.x, b.y, b.w, b.h); }
 
+    // Player
     ctx.save(); ctx.translate(player.x + player.w/2, player.y + player.h/2); ctx.scale(player.facing, 1); ctx.translate(-player.w/2, -player.h/2);
     ctx.globalAlpha = player.hurtCd>0 ? 0.6 : 1;
     ctx.fillStyle = '#60a5fa'; ctx.fillRect(0, 0, player.w, player.h);
@@ -654,6 +747,18 @@ Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
     ctx.fillStyle = '#1f2937'; ctx.fillRect(8,28,20,4);
     if (attack.active) { ctx.globalAlpha = 0.85; ctx.fillStyle = '#93c5fd'; const sx = player.w + 4; const sw = 26; const sh = 18; ctx.fillRect(sx, 12, sw, sh); }
     ctx.restore();
+
+    // Player shots (rotating cubes when fired mid-air)
+    for (const s of shots) {
+      ctx.save();
+      ctx.translate(s.x + s.w/2, s.y + s.h/2);
+      if (s.rotating) ctx.rotate(s.angle);
+      ctx.fillStyle = '#bfdbfe';
+      ctx.fillRect(-s.w/2, -s.h/2, s.w, s.h);
+      ctx.strokeStyle = '#e0f2fe';
+      ctx.strokeRect(-s.w/2, -s.h/2, s.w, s.h);
+      ctx.restore();
+    }
 
     ctx.restore();
   }
