@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Papu Platformer – Jefe Final y Brainrots</title>
+  <title>Papu Platformer – Mega Brainrot Fix</title>
   <style>
     html, body { height: 100%; margin: 0; background: #0b1020; color: #e8eefc; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
     canvas{ display:block; width:100vw; height:100vh; }
@@ -19,10 +19,8 @@
     #overlay .row { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
     #overlay .ghost { background: transparent; color: #e8eefc; border: 1px solid #1f2a44; }
     #audioToggle { position: fixed; top: 10px; right: 10px; background: rgba(10, 14, 30, .7); border: 1px solid #1f2a44; border-radius: 12px; padding: 6px 10px; font-weight: 700; cursor: pointer; }
-    /* Boss bar */
     #bossbar { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); width: min(80vw, 560px); height: 14px; border: 1px solid #1f2a44; background: rgba(10,14,30,.6); border-radius: 8px; overflow: hidden; display: none; }
     #bossbar > div { height: 100%; background: linear-gradient(90deg, #f43f5e, #ef4444); width: 100%; }
-    /* Touch controls */
     #touch { position: fixed; inset: 0; pointer-events: none; }
     .btn { position: absolute; bottom: 24px; width: 68px; height: 68px; border-radius: 50%; background: rgba(59,130,246,.25); border: 1px solid rgba(59,130,246,.45); pointer-events: auto; touch-action: none; display: grid; place-items: center; font-weight: 800; user-select: none; }
     .btn:active{ filter: brightness(1.2) }
@@ -107,14 +105,13 @@
   bindTouch('btnJump', ()=>touchJump=true, ()=>touchJump=false);
   bindTouch('btnAtk', ()=>touchAtk=true, ()=>touchAtk=false);
 
-  // Physics and constants
   const G = 1800, MOVE = 420, JUMP = 760, FRICTION = 0.82;
   const TILE = 32;
 
   const attack = { active:false, timer:0, duration:0.14, cooldown:0.28, cdLeft:0 };
 
   const state = {
-    screen: 'menu', // 'menu'|'playing'|'paused'|'won'|'lost'
+    screen: 'menu',
     startedAt: performance.now(),
     time: 0,
     coins: 0,
@@ -130,10 +127,9 @@
     onGround: false, canDouble: true,
     facing: 1,
     maxHp: 5, hp: 5,
-    hurtCd: 0 // i-frames after damage
+    hurtCd: 0
   };
 
-  // -------- Audio engine (same mechanics) --------
   const AudioSys = (()=>{
     let ctx = null, master, musicGain, sfxGain;
     let started = false, musicInterval = null;
@@ -207,7 +203,6 @@
     AudioSys.setAudio(!state.audioOn);
   });
 
-  // Hearts drawing
   function renderHearts() {
     healthHud.innerHTML = '';
     for (let i=0;i<player.maxHp;i++) {
@@ -219,7 +214,7 @@
     }
   }
 
-  // Levels 1 & 2 (reduced to reach boss quickly)
+  // ---- Level factories ----
   function mkLevel1(){ return {
     start: {x:60, y:-200},
     platforms: [{x:-200, y:300, w:1200, h:40},{x:350, y:220, w:120, h:16},{x:700, y:160, w:140, h:16},{x:1000, y:220, w:140, h:16}],
@@ -240,8 +235,6 @@
     goal: {x:1160, y:220, w:36, h:72},
     length: 1400
   };}
-
-  // Boss level
   function mkBossLevel(){ return {
     start: {x:120, y:-200},
     platforms: [
@@ -257,13 +250,15 @@
     enemies: [],
     goal: {x:1600, y:320, w:0, h:0},
     length: 1800,
-    boss: { x: 1250, y: 296, w: 56, h: 48, vx:0, vy:0, onGround:true, hp: 30, maxHp:30, phase:1, iFrames:0, atkCd:0, jumpCd:1.2, targetX:900 }
+    boss: { x: 1250, y: 296, w: 56, h: 48, vx:0, vy:0, onGround:true, hp: 30, maxHp:30, phase:1, iFrames:0, atkCd:0, jumpCd:1.2 }
   };}
 
-  const bullets = []; // turret bullets
-  const bossBullets = []; // boss projectiles
-  const levels = [ mkLevel1(), mkLevel2(), mkBossLevel() ];
+  function buildLevels(){ return [mkLevel1(), mkLevel2(), mkBossLevel()]; }
+
+  let levels = buildLevels();
   let cur = levels[state.levelIndex];
+  const bullets = [];
+  const bossBullets = [];
 
   function aabb(ax,ay,aw,ah,bx,by,bw,bh){ return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by; }
 
@@ -283,9 +278,8 @@
   function hideOverlay(){ overlay.style.display = 'none'; }
 
   const LORE = `Bienvenido, papu.
-El multiverso está infestado de brainrots: tareas que no dejan de molestar.
-Reúne moneditas para mantener la cordura, cuida tus corazones, y llega a la banderita antes de que el cringe te consuma.
-Derrota al Mega Brainrot del último nivel para recuperar tus ganas de estudiar.`;
+El multiverso está infestado de brainrots.
+Reúne moneditas, cuida tus corazones y vence al Mega Brainrot.`;
 
   function toMenu(){
     state.screen = 'menu';
@@ -311,19 +305,31 @@ Derrota al Mega Brainrot del último nivel para recuperar tus ganas de estudiar.
     showOverlay('Selector de niveles', 'Elegí tu dosis de tonterías:', actions);
   }
 
+  // --- IMPORTANT FIX: rebuild level objects on every start ---
   function startLevel(idx){
+    // Recreate levels to reset any mutated state (e.g., boss HP)
+    levels = buildLevels();
     state.levelIndex = idx;
     cur = levels[state.levelIndex];
+
     Object.assign(player, {x:cur.start.x, y:cur.start.y, vx:0, vy:0, onGround:false, canDouble:true, facing:1, hp: player.maxHp, hurtCd:0});
     Object.assign(state, {screen:'playing', coins:0, time:0, startedAt:performance.now(), camera:{x:0,y:0}});
+
+    // Reset collectibles/enemies
     cur.coins.forEach(c=>c.t=false);
     cur.hearts.forEach(h=>h.taken=false);
     if (cur.enemies) cur.enemies.forEach(e=>{ e.alive=true; e.hp = e.type==='walker'? (e.hp||2) : (e.hp||3); e.iFrames=0; if (e.type==='walker'){ e.x=(e.left+e.right)/2; } });
+
+    // Clear projectiles
     bullets.length = 0; bossBullets.length = 0;
+
+    // UI & audio
     hideOverlay();
     renderHearts();
-    if (state.audioOn) { AudioSys.Music.stop(); AudioSys.Music.start(state.levelIndex!==2); }
+    bossFill.style.width = "100%";
     bossbar.style.display = (state.levelIndex===2) ? 'block' : 'none';
+
+    if (state.audioOn) { AudioSys.Music.stop(); AudioSys.Music.start(state.levelIndex!==2); }
   }
 
   function nextLevel(){
@@ -349,7 +355,6 @@ Derrota al Mega Brainrot del último nivel para recuperar tus ganas de estudiar.
     ]);
   }
 
-  // Damage to player
   function damagePlayer(amount){
     if (player.hurtCd > 0) return;
     player.hp -= amount;
@@ -373,7 +378,6 @@ Derrota al Mega Brainrot del último nivel para recuperar tus ganas de estudiar.
     AudioSys.SFX.attack();
   }
 
-  // Boss AI
   function bossStep(dt){
     const b = cur.boss; if (!b) return;
     if (b.iFrames>0) b.iFrames -= dt;
