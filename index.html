@@ -248,7 +248,7 @@
     AudioSys.setAudio(!state.audioOn);
   });
 
-  // HUD corazones (SVG, fuera del atlas para que se vean nítidos)
+  // HUD corazones
   function renderHearts() {
     healthHud.innerHTML = '';
     for (let i=0;i<player.maxHp;i++) {
@@ -311,6 +311,15 @@
   const shots = [];        // player cube shots
 
   function aabb(ax,ay,aw,ah,bx,by,bw,bh){ return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by; }
+
+  // === NUEVO: hitbox del ataque cuerpo a cuerpo ===
+  function getAttackBox(){
+    // Caja de impacto delante del jugador, alineada con el sprite de ataque
+    const w = 40, h = 28;
+    const x = player.facing > 0 ? (player.x + player.w - 6) : (player.x - (w - 6));
+    const y = player.y + 9;
+    return {x, y, w, h};
+  }
 
   function showOverlay(title, body, actions=[]) {
     ovTitle.textContent = title;
@@ -558,7 +567,7 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
       }
     }
 
-    // Enemigos
+    // Enemigos normales
     if (state.levelIndex < 2) {
       for (const e of cur.enemies) {
         if (!e.alive) continue;
@@ -579,6 +588,7 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
           }
         }
 
+        // Daño por contacto (pisotón)
         if (aabb(player.x, player.y, player.w, player.h, e.x, e.y, e.w, e.h)) {
           if (player.vy > 120) {
             e.hp -= 2; e.iFrames = 0.2;
@@ -588,8 +598,20 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
             damagePlayer(1);
           }
         }
+
+        // === NUEVO: daño por ataque cuerpo a cuerpo (X) ===
+        if (attack.active && e.alive && e.iFrames <= 0) {
+          const atk = getAttackBox();
+          if (aabb(atk.x, atk.y, atk.w, atk.h, e.x, e.y, e.w, e.h)) {
+            e.hp -= 1;
+            e.iFrames = 0.2;
+            AudioSys.SFX.hit();
+            if (e.hp <= 0) { e.alive = false; state.coins += 1; }
+          }
+        }
       }
     } else {
+      // Jefe
       const b = cur.boss;
       bossbar.style.display = 'block';
       bossFill.style.width = (100 * Math.max(0, b.hp) / b.maxHp) + '%';
@@ -600,10 +622,14 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
         else { damagePlayer(1); }
       }
 
-      if (attack.active && b.iFrames<=0) {
-        const w = 30, h = 24;
-        const atkBox = { x: player.x + (player.facing>0 ? player.w : -w) + (player.facing>0?2:-2), y: player.y + 10, w, h };
-        if (aabb(atkBox.x, atkBox.y, atkBox.w, atkBox.h, b.x, b.y, b.w, b.h)) { b.hp -= 1; b.iFrames = 0.2; AudioSys.SFX.hit(); }
+      // === NUEVO: ataque cuerpo a cuerpo también daña al jefe ===
+      if (attack.active && b.iFrames <= 0) {
+        const atk = getAttackBox();
+        if (aabb(atk.x, atk.y, atk.w, atk.h, b.x, b.y, b.w, b.h)) {
+          b.hp -= 1;
+          b.iFrames = 0.2;
+          AudioSys.SFX.hit();
+        }
       }
 
       // Cubitos vs jefe
@@ -711,7 +737,7 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
     }
     ctx.globalAlpha = 1;
 
-    // Plataformas (rect simple para mantener hitbox limpia)
+    // Plataformas
     for (const p of cur.platforms) {
       ctx.fillStyle = '#1f2937'; ctx.fillRect(p.x, p.y, p.w, p.h);
       ctx.fillStyle = '#334155'; ctx.fillRect(p.x, p.y, p.w, 4);
@@ -764,14 +790,14 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
     // Balas enemigas
     for (const b of bullets) drawSpr(SPR.bullet[0], b.x, b.y, b.w, b.h);
 
-    // Jugador (elige anim según estado)
+    // Jugador
     let pf = SPR.player_idle[ Math.floor((performance.now()/250)%SPR.player_idle.length) ];
     if (!player.onGround) pf = SPR.player_jump[0];
     else if (Math.abs(player.vx) > 1) pf = SPR.player_run[ Math.floor((performance.now()/120)%SPR.player_run.length) ];
     const flip = player.facing < 0;
     drawSpr(pf, player.x, player.y, player.w, player.h, {flip, alpha: player.hurtCd>0 ? 0.8 : 1});
 
-    // Ataque cuerpo a cuerpo (un sprite ancho)
+    // Ataque cuerpo a cuerpo (sprite ancho)
     if (attack.active) {
       const af = SPR.player_attack[0];
       const aw = 54, ah = 46;
@@ -779,7 +805,7 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
       drawSpr(af, ax, player.y, aw, ah, {flip});
     }
 
-    // Disparos del jugador (cubitos; rotan si se disparó en el aire)
+    // Disparos del jugador
     for (const s of shots) {
       drawSpr(SPR.cube[0], s.x, s.y, s.w, s.h, {rot: s.rotating ? s.angle : 0});
     }
@@ -807,6 +833,7 @@ Tip: en el nivel del jefe hay un power-up para disparar cubitos (tecla C).`;
   window.addEventListener('keydown', (e)=>{
     if (state.screen==='menu' && (e.code==='Enter')) { AudioSys.resume(); AudioSys.setAudio(true); startLevel(0); hideOverlay(); }
   });
-})();</script>
+})();
+</script>
 </body>
 </html>
